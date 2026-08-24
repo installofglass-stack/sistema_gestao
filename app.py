@@ -24,13 +24,12 @@ for folder in [UPLOAD_FOLDER, STATIC_UPLOAD_FOLDER, EXPORTS_PDF_DIR, EXPORTS_EXC
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
-# Configuração do PostgreSQL no Render ou SQLite local de fallback
+# Configuração do PostgreSQL no Render (com driver psycopg 3) ou SQLite local de fallback
 DATABASE_URL = os.environ.get('DATABASE_URL')
-if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-
 if DATABASE_URL:
-    if DATABASE_URL.startswith("postgresql://"):
+    if DATABASE_URL.startswith("postgres://"):
+        DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg://", 1)
+    elif DATABASE_URL.startswith("postgresql://"):
         DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
     engine = create_engine(DATABASE_URL)
     DB_TYPE = "postgres"
@@ -41,14 +40,17 @@ else:
     DB_TYPE = "sqlite"
 
 def fix_text(val):
-    if not val or pd.isna(val) or str(val).lower() == 'nan': return ""
-    if not isinstance(val, str): val = str(val)
+    if not val or pd.isna(val) or str(val).lower() == 'nan': 
+        return ""
+    if not isinstance(val, str): 
+        val = str(val)
     
-    # Tenta corrigir se o texto veio corrompido com codificação antiga
-    for encoding_origem in ['latin1', 'cp1252', 'iso-8859-1']:
+    # Tenta corrigir automaticamente textos corrompidos por codificações antigas
+    for enc in ['utf-8', 'latin1', 'cp1252', 'iso-8859-1']:
         try:
-            texto_corrigido = val.encode(encoding_origem).decode('utf-8')
-            return texto_corrigido
+            if enc == 'utf-8':
+                return val
+            return val.encode('latin1').decode('utf-8')
         except:
             continue
     return val
@@ -173,8 +175,6 @@ def salvar_historico_arquivo():
 def encontrar_imagem_na_pasta(codigo):
     if not codigo: return ""
     codigo_str = str(codigo).strip().lower()
-    
-    # Verifica em ambas as pastas de upload possíveis
     pastas_para_checar = [UPLOAD_FOLDER, STATIC_UPLOAD_FOLDER]
     for pasta in pastas_para_checar:
         if os.path.exists(pasta):
@@ -207,22 +207,28 @@ def index():
 
     if DB_TYPE == "postgres":
         with engine.connect() as conn:
-            res_reg = conn.execute(text("SELECT * FROM acessorios ORDER BY codigo ASC"))
-            cols = res_reg.keys()
+            res_reg = conn.execute(text("SELECT id, imagem, codigo, descricao, fornecedor, linha, cor, medida, sistema, valor, observacao, estoque, nescessario, material, peso_kg_m FROM acessorios ORDER BY codigo ASC"))
             for r in res_reg.fetchall():
-                r_dict = dict(zip(cols, r))
-                for key in r_dict:
-                    val = r_dict[key]
-                    if pd.isna(val) or str(val).lower() == 'nan' or val is None:
-                        r_dict[key] = ""
-                    elif isinstance(val, str):
-                        r_dict[key] = fix_text(val)
-                
-                img_atual = r_dict.get('imagem', '')
-                if not img_atual or str(img_atual).lower() == 'nan':
-                    r_dict['imagem'] = encontrar_imagem_na_pasta(r_dict.get('codigo'))
-                else:
-                    r_dict['imagem'] = os.path.basename(img_atual)
+                val_calc = r[9] if r[9] is not None else 0.0
+                if val_calc > 999999.0: val_calc = 0.0
+
+                r_dict = {
+                    'id': r[0],
+                    'imagem': os.path.basename(r[1]) if r[1] and str(r[1]).lower() != 'nan' else encontrar_imagem_na_pasta(r[2]),
+                    'codigo': fix_text(r[2]),
+                    'descricao': fix_text(r[3]),
+                    'fornecedor': fix_text(r[4]),
+                    'linha': fix_text(r[5]),
+                    'cor': fix_text(r[6]),
+                    'medida': fix_text(r[7]),
+                    'sistema': fix_text(r[8]),
+                    'valor': round(val_calc, 2),
+                    'observacao': fix_text(r[10]),
+                    'estoque': r[11] if r[11] is not None else 0,
+                    'nescessario': r[12] if r[12] is not None else 0,
+                    'material': fix_text(r[13]),
+                    'peso_kg_m': r[14] if r[14] is not None else 0.0
+                }
                 registros.append(r_dict)
             
             res_stats = conn.execute(text("SELECT COUNT(*), SUM(valor * COALESCE(estoque, 0)), COUNT(DISTINCT fornecedor) FROM acessorios"))
@@ -233,24 +239,29 @@ def index():
             precos_cores = res_precos.fetchall()
     else:
         conn = sqlite3.connect(DB_NAME)
-        conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM acessorios ORDER BY codigo ASC")
-        registros_bruto = cursor.fetchall()
-        for reg in registros_bruto:
-            r_dict = dict(reg)
-            for key in r_dict:
-                val = r_dict[key]
-                if pd.isna(val) or str(val).lower() == 'nan' or val is None:
-                    r_dict[key] = ""
-                elif isinstance(val, str):
-                    r_dict[key] = fix_text(val)
-            
-            img_atual = r_dict.get('imagem', '')
-            if not img_atual or str(img_atual).lower() == 'nan':
-                r_dict['imagem'] = encontrar_imagem_na_pasta(r_dict.get('codigo'))
-            else:
-                r_dict['imagem'] = os.path.basename(img_atual)
+        cursor.execute("SELECT id, imagem, codigo, descricao, fornecedor, linha, cor, medida, sistema, valor, observacao, estoque, nescessario, material, peso_kg_m FROM acessorios ORDER BY codigo ASC")
+        for r in cursor.fetchall():
+            val_calc = r[9] if r[9] is not None else 0.0
+            if val_calc > 999999.0: val_calc = 0.0
+
+            r_dict = {
+                'id': r[0],
+                'imagem': os.path.basename(r[1]) if r[1] and str(r[1]).lower() != 'nan' else encontrar_imagem_na_pasta(r[2]),
+                'codigo': fix_text(r[2]),
+                'descricao': fix_text(r[3]),
+                'fornecedor': fix_text(r[4]),
+                'linha': fix_text(r[5]),
+                'cor': fix_text(r[6]),
+                'medida': fix_text(r[7]),
+                'sistema': fix_text(r[8]),
+                'valor': round(val_calc, 2),
+                'observacao': fix_text(r[10]),
+                'estoque': r[11] if r[11] is not None else 0,
+                'nescessario': r[12] if r[12] is not None else 0,
+                'material': fix_text(r[13]),
+                'peso_kg_m': r[14] if r[14] is not None else 0.0
+            }
             registros.append(r_dict)
             
         cursor.execute("SELECT COUNT(*), SUM(valor * COALESCE(estoque, 0)), COUNT(DISTINCT fornecedor) FROM acessorios")
@@ -279,7 +290,7 @@ def servir_uploads(filename):
 
 @app.route('/salvar_preco_kg', methods=['POST'])
 def salvar_preco_kg():
-    cor = request.form.get('cor', '').strip().upper()
+    cor = fix_text(request.form.get('cor')).strip().upper()
     preco_kg = clean_num(request.form.get('preco_kg'))
     if cor:
         if DB_TYPE == "postgres":
@@ -309,20 +320,22 @@ def excluir_preco_kg(id):
 @app.route('/salvar', methods=['POST'])
 def salvar():
     id_reg = request.form.get('id')
-    codigo = request.form.get('codigo')
-    descricao = request.form.get('descricao')
-    fornecedor = request.form.get('fornecedor')
-    linha = request.form.get('linha')
-    cor = request.form.get('cor', '').strip().upper()
-    medida = request.form.get('medida')
-    sistema = request.form.get('sistema')
-    observacao = request.form.get('observacao')
+    codigo = fix_text(request.form.get('codigo')).strip()
+    descricao = fix_text(request.form.get('descricao'))
+    fornecedor = fix_text(request.form.get('fornecedor'))
+    linha = fix_text(request.form.get('linha'))
+    cor = fix_text(request.form.get('cor')).strip().upper()
+    medida = fix_text(request.form.get('medida'))
+    sistema = fix_text(request.form.get('sistema'))
+    observacao = fix_text(request.form.get('observacao'))
     estoque = int(clean_num(request.form.get('estoque')))
     nescessario = int(clean_num(request.form.get('nescessario')))
-    material = request.form.get('material', '').strip().upper()
+    material = fix_text(request.form.get('material')).strip().upper()
     peso_kg_m = clean_num(request.form.get('peso_kg_m'))
     valor = clean_num(request.form.get('valor'))
     
+    if valor > 999999.0: valor = 0.0
+
     file = request.files.get('imagem_file')
     img = ""
     if file and file.filename:
@@ -338,7 +351,6 @@ def salvar():
                 p_row = res.fetchone()
                 if p_row and p_row[0]:
                     valor = round(float(p_row[0]) * peso_kg_m * 6.0, 2)
-                    valor = float(f"{valor:.2f}") # Força o arredondamento limpo de 2 casas
         else:
             conn_temp = sqlite3.connect(DB_NAME)
             cur_temp = conn_temp.cursor()
@@ -439,8 +451,8 @@ def movimentar():
 
 @app.route('/excluir_movimento/<int:id>', methods=['POST'])
 def excluir_movimento(id):
-    nome = request.form.get('nome_autorizacao', '').strip()
-    senha = request.form.get('senha_autorizacao', '').strip()
+    nome = fix_text(request.form.get('nome_autorizacao')).strip()
+    senha = fix_text(request.form.get('senha_autorizacao')).strip()
     
     if nome.lower() == "admin" and senha == "1234":
         if DB_TYPE == "postgres":
@@ -468,15 +480,28 @@ def relatorio_movimentacoes():
             cols_mov = res_mov.keys()
             movs = [dict(zip(cols_mov, r)) for r in res_mov.fetchall()]
 
-            res_reg = conn.execute(text("SELECT * FROM acessorios ORDER BY codigo ASC"))
-            cols_reg = res_reg.keys()
+            res_reg = conn.execute(text("SELECT id, imagem, codigo, descricao, fornecedor, linha, cor, medida, sistema, valor, observacao, estoque, nescessario, material, peso_kg_m FROM acessorios ORDER BY codigo ASC"))
             for r in res_reg.fetchall():
-                r_dict = dict(zip(cols_reg, r))
-                img_atual = r_dict.get('imagem', '')
-                if not img_atual or str(img_atual).lower() == 'nan':
-                    r_dict['imagem'] = encontrar_imagem_na_pasta(r_dict.get('codigo'))
-                else:
-                    r_dict['imagem'] = os.path.basename(img_atual)
+                val_calc = r[9] if r[9] is not None else 0.0
+                if val_calc > 999999.0: val_calc = 0.0
+
+                r_dict = {
+                    'id': r[0],
+                    'imagem': os.path.basename(r[1]) if r[1] and str(r[1]).lower() != 'nan' else encontrar_imagem_na_pasta(r[2]),
+                    'codigo': fix_text(r[2]),
+                    'descricao': fix_text(r[3]),
+                    'fornecedor': fix_text(r[4]),
+                    'linha': fix_text(r[5]),
+                    'cor': fix_text(r[6]),
+                    'medida': fix_text(r[7]),
+                    'sistema': fix_text(r[8]),
+                    'valor': round(val_calc, 2),
+                    'observacao': fix_text(r[10]),
+                    'estoque': r[11] if r[11] is not None else 0,
+                    'nescessario': r[12] if r[12] is not None else 0,
+                    'material': fix_text(r[13]),
+                    'peso_kg_m': r[14] if r[14] is not None else 0.0
+                }
                 registros.append(r_dict)
 
             res_stats = conn.execute(text("SELECT COUNT(*), SUM(valor * COALESCE(estoque, 0)), COUNT(DISTINCT fornecedor) FROM acessorios"))
@@ -487,18 +512,31 @@ def relatorio_movimentacoes():
             precos_cores = res_precos.fetchall()
     else:
         conn = sqlite3.connect(DB_NAME)
-        conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM movimentacoes ORDER BY id DESC")
         movs = cursor.fetchall()
-        cursor.execute("SELECT * FROM acessorios ORDER BY codigo ASC")
-        for reg in cursor.fetchall():
-            r_dict = dict(reg)
-            img_atual = r_dict.get('imagem', '')
-            if not img_atual or str(img_atual).lower() == 'nan':
-                r_dict['imagem'] = encontrar_imagem_na_pasta(r_dict.get('codigo'))
-            else:
-                r_dict['imagem'] = os.path.basename(img_atual)
+        cursor.execute("SELECT id, imagem, codigo, descricao, fornecedor, linha, cor, medida, sistema, valor, observacao, estoque, nescessario, material, peso_kg_m FROM acessorios ORDER BY codigo ASC")
+        for r in cursor.fetchall():
+            val_calc = r[9] if r[9] is not None else 0.0
+            if val_calc > 999999.0: val_calc = 0.0
+
+            r_dict = {
+                'id': r[0],
+                'imagem': os.path.basename(r[1]) if r[1] and str(r[1]).lower() != 'nan' else encontrar_imagem_na_pasta(r[2]),
+                'codigo': fix_text(r[2]),
+                'descricao': fix_text(r[3]),
+                'fornecedor': fix_text(r[4]),
+                'linha': fix_text(r[5]),
+                'cor': fix_text(r[6]),
+                'medida': fix_text(r[7]),
+                'sistema': fix_text(r[8]),
+                'valor': round(val_calc, 2),
+                'observacao': fix_text(r[10]),
+                'estoque': r[11] if r[11] is not None else 0,
+                'nescessario': r[12] if r[12] is not None else 0,
+                'material': fix_text(r[13]),
+                'peso_kg_m': r[14] if r[14] is not None else 0.0
+            }
             registros.append(r_dict)
             
         cursor.execute("SELECT COUNT(*), SUM(valor * COALESCE(estoque, 0)), COUNT(DISTINCT fornecedor) FROM acessorios")
@@ -548,7 +586,7 @@ def exportar_carrinho_pdf():
     header_row = [Paragraph("Imagem", style_header), Paragraph("Código", style_header), Paragraph("Descrição", style_header), Paragraph("Cor", style_header), Paragraph("Quantidade", style_header)]
     data = [header_row]
     for item in carrinho:
-        codigo = str(item.get('codigo', ''))
+        codigo = fix_text(item.get('codigo', ''))
         img_element = Paragraph("Sem Foto", style_cell)
         img_nome = encontrar_imagem_na_pasta(codigo)
         if img_nome:
@@ -563,7 +601,7 @@ def exportar_carrinho_pdf():
                     img_element.hAlign = 'CENTER'
                 except: pass
 
-        data.append([img_element, Paragraph(codigo, style_cell), Paragraph(str(item.get('descricao', '')), style_desc), Paragraph(str(item.get('cor', '')), style_cell), Paragraph(str(item.get('quantidade', 0)), style_cell)])
+        data.append([img_element, Paragraph(codigo, style_cell), Paragraph(fix_text(item.get('descricao', '')), style_desc), Paragraph(fix_text(item.get('cor', '')), style_cell), Paragraph(str(item.get('quantidade', 0)), style_cell)])
         
     t = Table(data, colWidths=[55, 70, 212, 100, 115])
     t.setStyle(TableStyle([
@@ -636,17 +674,17 @@ def importar_excel():
             df.columns = [str(c).lower().strip() for c in df.columns]
             
             for _, row in df.iterrows():
-                codigo = str(row.get('codigo', '')).strip()
+                codigo = fix_text(row.get('codigo', '')).strip()
                 if not codigo or codigo.lower() == 'nan': continue
                 
-                descricao = "" if pd.isna(row.get('descricao')) or str(row.get('descricao')).lower() == 'nan' else str(row.get('descricao'))
-                fornecedor = "" if pd.isna(row.get('fornecedor')) or str(row.get('fornecedor')).lower() == 'nan' else str(row.get('fornecedor'))
-                linha = "" if pd.isna(row.get('linha')) or str(row.get('linha')).lower() == 'nan' else str(row.get('linha'))
-                cor = "" if pd.isna(row.get('cor')) or str(row.get('cor')).lower() == 'nan' else str(row.get('cor')).strip().upper()
-                medida = "" if pd.isna(row.get('medida')) or str(row.get('medida')).lower() == 'nan' else str(row.get('medida'))
-                sistema = "" if pd.isna(row.get('sistema')) or str(row.get('sistema')).lower() == 'nan' else str(row.get('sistema'))
-                observacao = "" if pd.isna(row.get('observacao')) or str(row.get('observacao')).lower() == 'nan' else str(row.get('observacao'))
-                material = "" if pd.isna(row.get('material')) or str(row.get('material')).lower() == 'nan' else str(row.get('material')).strip().upper()
+                descricao = fix_text(row.get('descricao'))
+                fornecedor = fix_text(row.get('fornecedor'))
+                linha = fix_text(row.get('linha'))
+                cor = fix_text(row.get('cor')).strip().upper()
+                medida = fix_text(row.get('medida'))
+                sistema = fix_text(row.get('sistema'))
+                observacao = fix_text(row.get('observacao'))
+                material = fix_text(row.get('material')).strip().upper()
                 
                 img_csv = str(row.get('imagem', row.get('image', ''))).strip()
                 if img_csv.lower() == 'nan': img_csv = ""
@@ -655,6 +693,8 @@ def importar_excel():
                 nescessario = int(clean_num(row.get('nescessario', 0)))
                 peso_kg_m = clean_num(row.get('peso_kg_m', 0))
                 valor = clean_num(row.get('valor', 0))
+
+                if valor > 999999.0: valor = 0.0
 
                 if material == 'PERFIL' and peso_kg_m > 0 and cor:
                     if DB_TYPE == "postgres":
@@ -811,6 +851,7 @@ def exportar_pdf():
                 row_data.append(img_element)
             elif idx == 8:
                 val = row[8]
+                if val is not None and val > 999999.0: val = 0.0
                 row_data.append(Paragraph(f"R$ {val:.2f}" if val is not None and not pd.isna(val) else "R$ 0.00", style_cell))
             elif idx == 11:
                 p_m = row[11]
