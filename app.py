@@ -8,6 +8,7 @@ from reportlab.lib.pagesizes import portrait, landscape, letter
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
+from sqlalchemy import create_engine, text
 
 app = Flask(__name__)
 
@@ -22,7 +23,18 @@ for folder in [DATA_DIR, UPLOAD_FOLDER, EXPORTS_PDF_DIR, EXPORTS_EXCEL_DIR, IMPO
     os.makedirs(folder, exist_ok=True)
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-DB_NAME = os.path.join(DATA_DIR, 'meu_estoque.db')
+
+# Configuração do Banco de Dados: Usa PostgreSQL se estiver no Render, senão usa SQLite local
+DATABASE_URL = os.environ.get('DATABASE_URL')
+if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+if DATABASE_URL:
+    engine = create_engine(DATABASE_URL)
+    DB_TYPE = "postgres"
+else:
+    DB_NAME = os.path.join(DATA_DIR, 'meu_estoque.db')
+    DB_TYPE = "sqlite"
 
 def fix_text(val):
     if not val or not isinstance(val, str): return val
@@ -32,52 +44,87 @@ def fix_text(val):
         return val
 
 def init_db():
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS acessorios (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            imagem TEXT,
-            codigo TEXT,
-            descricao TEXT,
-            fornecedor TEXT,
-            linha TEXT,
-            cor TEXT,
-            medida TEXT,
-            sistema TEXT,
-            valor REAL,
-            observacao TEXT,
-            estoque INTEGER DEFAULT 0,
-            nescessario INTEGER DEFAULT 0,
-            material TEXT,
-            peso_kg_m REAL DEFAULT 0
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS movimentacoes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            acessorio_id INTEGER,
-            codigo TEXT,
-            descricao TEXT,
-            tipo TEXT,
-            quantidade INTEGER,
-            data TEXT
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS precos_kg (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            cor TEXT UNIQUE,
-            preco_kg REAL
-        )
-    ''')
-    for col in [("estoque", "INTEGER DEFAULT 0"), ("nescessario", "INTEGER DEFAULT 0"), ("material", "TEXT"), ("peso_kg_m", "REAL DEFAULT 0")]:
-        try:
-            cursor.execute(f"ALTER TABLE acessorios ADD COLUMN {col[0]} {col[1]}")
-        except:
-            pass
-    conn.commit()
-    conn.close()
+    if DB_TYPE == "postgres":
+        with engine.begin() as conn:
+            conn.execute(text('''
+                CREATE TABLE IF NOT EXISTS acessorios (
+                    id SERIAL PRIMARY KEY,
+                    imagem TEXT,
+                    codigo TEXT,
+                    descricao TEXT,
+                    fornecedor TEXT,
+                    linha TEXT,
+                    cor TEXT,
+                    medida TEXT,
+                    sistema TEXT,
+                    valor REAL,
+                    observacao TEXT,
+                    estoque INTEGER DEFAULT 0,
+                    nescessario INTEGER DEFAULT 0,
+                    material TEXT,
+                    peso_kg_m REAL DEFAULT 0
+                )
+            '''))
+            conn.execute(text('''
+                CREATE TABLE IF NOT EXISTS movimentacoes (
+                    id SERIAL PRIMARY KEY,
+                    acessorio_id INTEGER,
+                    codigo TEXT,
+                    descricao TEXT,
+                    tipo TEXT,
+                    quantidade INTEGER,
+                    data TEXT
+                )
+            '''))
+            conn.execute(text('''
+                CREATE TABLE IF NOT EXISTS precos_kg (
+                    id SERIAL PRIMARY KEY,
+                    cor TEXT UNIQUE,
+                    preco_kg REAL
+                )
+            '''))
+    else:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS acessorios (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                imagem TEXT,
+                codigo TEXT,
+                descricao TEXT,
+                fornecedor TEXT,
+                linha TEXT,
+                cor TEXT,
+                medida TEXT,
+                sistema TEXT,
+                valor REAL,
+                observacao TEXT,
+                estoque INTEGER DEFAULT 0,
+                nescessario INTEGER DEFAULT 0,
+                material TEXT,
+                peso_kg_m REAL DEFAULT 0
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS movimentacoes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                acessorio_id INTEGER,
+                codigo TEXT,
+                descricao TEXT,
+                tipo TEXT,
+                quantidade INTEGER,
+                data TEXT
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS precos_kg (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cor TEXT UNIQUE,
+                preco_kg REAL
+            )
+        ''')
+        conn.commit()
+        conn.close()
 
 init_db()
 
@@ -95,9 +142,12 @@ def clean_num(val):
 
 def salvar_historico_arquivo():
     try:
-        conn = sqlite3.connect(DB_NAME)
-        df = pd.read_sql_query("SELECT * FROM movimentacoes", conn)
-        conn.close()
+        if DB_TYPE == "postgres":
+            df = pd.read_sql("SELECT * FROM movimentacoes", engine)
+        else:
+            conn = sqlite3.connect(DB_NAME)
+            df = pd.read_sql_query("SELECT * FROM movimentacoes", conn)
+            conn.close()
         file_path = os.path.join(DATA_DIR, "historico_movimentacoes.csv")
         df.to_csv(file_path, index=False, sep=';', encoding='utf-8-sig')
     except Exception as e:
@@ -113,51 +163,103 @@ def encontrar_imagem_na_pasta(codigo):
     return ""
 
 def get_most_used_values():
-    conn = sqlite3.connect(DB_NAME)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
     data = {}
-    for col in ['cor', 'fornecedor', 'medida', 'sistema', 'linha', 'material']:
-        cursor.execute(f"SELECT DISTINCT TRIM({col}) FROM acessorios WHERE {col} IS NOT NULL AND TRIM({col}) != '' ORDER BY {col} ASC")
-        data[col + 's'] = [fix_text(row[0]) for row in cursor.fetchall() if row[0]]
-    
-    cursor.execute("SELECT * FROM precos_kg ORDER BY cor ASC")
-    precos_bruto = cursor.fetchall()
-    data['precos_cores'] = [{'id': p['id'], 'cor': fix_text(p['cor']), 'preco_kg': p['preco_kg']} for p in precos_bruto]
-    conn.close()
+    if DB_TYPE == "postgres":
+        with engine.connect() as conn:
+            for col in ['cor', 'fornecedor', 'medida', 'sistema', 'linha', 'material']:
+                res = conn.execute(text(f"SELECT DISTINCT TRIM({col}) FROM acessorios WHERE {col} IS NOT NULL AND TRIM({col}) != '' ORDER BY 1 ASC"))
+                data[col + 's'] = [fix_text(row[0]) for row in res.fetchall() if row[0]]
+            res_precos = conn.execute(text("SELECT * FROM precos_kg ORDER BY cor ASC"))
+            data['precos_cores'] = [{'id': p[0], 'cor': fix_text(p[1]), 'preco_kg': p[2]} for p in res_precos.fetchall()]
+    else:
+        conn = sqlite3.connect(DB_NAME)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        for col in ['cor', 'fornecedor', 'medida', 'sistema', 'linha', 'material']:
+            cursor.execute(f"SELECT DISTINCT TRIM({col}) FROM acessorios WHERE {col} IS NOT NULL AND TRIM({col}) != '' ORDER BY {col} ASC")
+            data[col + 's'] = [fix_text(row[0]) for row in cursor.fetchall() if row[0]]
+        cursor.execute("SELECT * FROM precos_kg ORDER BY cor ASC")
+        precos_bruto = cursor.fetchall()
+        data['precos_cores'] = [{'id': p['id'], 'cor': fix_text(p['cor']), 'preco_kg': p['preco_kg']} for p in precos_bruto]
+        conn.close()
     return data
 
 @app.route('/')
 def index():
-    conn = sqlite3.connect(DB_NAME)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    
-    cursor.execute("SELECT * FROM acessorios ORDER BY codigo ASC")
-    registros_bruto = cursor.fetchall()
-    
     registros = []
-    for reg in registros_bruto:
-        r_dict = dict(reg)
-        for key in r_dict:
-            if isinstance(r_dict[key], str):
-                r_dict[key] = fix_text(r_dict[key])
-        registros.append(r_dict)
+    stats = (0, 0.0, 0)
+    precos_cores = []
     
+    coluna = request.args.get('coluna', 'codigo')
+    termo = request.args.get('termo', '').strip()
+
+    if DB_TYPE == "postgres":
+        with engine.connect() as conn:
+            if termo:
+                query = text(f"SELECT * FROM acessorios WHERE CAST({coluna} AS TEXT) ILIKE :termo ORDER BY codigo ASC")
+                res_reg = conn.execute(query, {"termo": f"%{termo}%"})
+            else:
+                res_reg = conn.execute(text("SELECT * FROM acessorios ORDER BY codigo ASC"))
+            
+            cols = res_reg.keys()
+            for r in res_reg.fetchall():
+                r_dict = dict(zip(cols, r))
+                for key in r_dict:
+                    if isinstance(r_dict[key], str):
+                        r_dict[key] = fix_text(r_dict[key])
+                # Limpa o nome da imagem para pegar apenas o arquivo puro
+                if r_dict.get('imagem'):
+                    r_dict['imagem'] = os.path.basename(r_dict['imagem'])
+                registros.append(r_dict)
+            
+            res_stats = conn.execute(text("SELECT COUNT(*), SUM(valor * COALESCE(estoque, 0)), COUNT(DISTINCT fornecedor) FROM acessorios"))
+            stats_row = res_stats.fetchone()
+            if stats_row: stats = stats_row
+
+            res_precos = conn.execute(text("SELECT * FROM precos_kg ORDER BY cor ASC"))
+            precos_cores = res_precos.fetchall()
+    else:
+        conn = sqlite3.connect(DB_NAME)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        if termo:
+            query = f"SELECT * FROM acessorios WHERE {coluna} LIKE ? ORDER BY codigo ASC"
+            cursor.execute(query, (f"%{termo}%",))
+        else:
+            cursor.execute("SELECT * FROM acessorios ORDER BY codigo ASC")
+            
+        registros_bruto = cursor.fetchall()
+        for reg in registros_bruto:
+            r_dict = dict(reg)
+            for key in r_dict:
+                if isinstance(r_dict[key], str):
+                    r_dict[key] = fix_text(r_dict[key])
+            if r_dict.get('imagem'):
+                r_dict['imagem'] = os.path.basename(r_dict['imagem'])
+            registros.append(r_dict)
+            
+        cursor.execute("SELECT COUNT(*), SUM(valor * COALESCE(estoque, 0)), COUNT(DISTINCT fornecedor) FROM acessorios")
+        stats = cursor.fetchone()
+        cursor.execute("SELECT * FROM precos_kg ORDER BY cor ASC")
+        precos_cores = cursor.fetchall()
+        conn.close()
+
+    # Atualizar imagens ausentes se necessário
     for reg in registros:
-        if not reg['imagem'] and reg['codigo']:
+        if not reg.get('imagem') and reg.get('codigo'):
             img = encontrar_imagem_na_pasta(reg['codigo'])
             if img:
-                cursor.execute("UPDATE acessorios SET imagem = ? WHERE id = ?", (img, reg['id']))
-                conn.commit()
-                
-    cursor.execute("SELECT COUNT(*), SUM(valor * COALESCE(estoque, 0)), COUNT(DISTINCT fornecedor) FROM acessorios")
-    stats = cursor.fetchone()
-    
-    cursor.execute("SELECT * FROM precos_kg ORDER BY cor ASC")
-    precos_cores = cursor.fetchall()
-    
-    conn.close()
+                reg['imagem'] = img
+                if DB_TYPE == "postgres":
+                    with engine.begin() as conn:
+                        conn.execute(text("UPDATE acessorios SET imagem = :img WHERE id = :id"), {"img": img, "id": reg['id']})
+                else:
+                    conn = sqlite3.connect(DB_NAME)
+                    cursor = conn.cursor()
+                    cursor.execute("UPDATE acessorios SET imagem = ? WHERE id = ?", (img, reg['id']))
+                    conn.commit()
+                    conn.close()
+
     return render_template('index.html', 
                            registros=registros, 
                            total_itens=stats[0] or 0, 
@@ -166,7 +268,9 @@ def index():
                            dropdowns=get_most_used_values(), 
                            precos_cores=precos_cores, 
                            movimentacoes=[], 
-                           abrir_modal_relatorio=False)
+                           abrir_modal_relatorio=False,
+                           coluna=coluna,
+                           termo=termo)
 
 @app.route('/uploads/<path:filename>')
 def servir_uploads(filename):
@@ -177,20 +281,28 @@ def salvar_preco_kg():
     cor = request.form.get('cor', '').strip().upper()
     preco_kg = clean_num(request.form.get('preco_kg'))
     if cor:
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        cursor.execute("INSERT OR REPLACE INTO precos_kg (cor, preco_kg) VALUES (?, ?)", (cor, preco_kg))
-        conn.commit()
-        conn.close()
+        if DB_TYPE == "postgres":
+            with engine.begin() as conn:
+                conn.execute(text("INSERT INTO precos_kg (cor, preco_kg) VALUES (:cor, :preco) ON CONFLICT (cor) DO UPDATE SET preco_kg = :preco"), {"cor": cor, "preco": preco_kg})
+        else:
+            conn = sqlite3.connect(DB_NAME)
+            cursor = conn.cursor()
+            cursor.execute("INSERT OR REPLACE INTO precos_kg (cor, preco_kg) VALUES (?, ?)", (cor, preco_kg))
+            conn.commit()
+            conn.close()
     return redirect(url_for('index'))
 
 @app.route('/excluir_preco_kg/<int:id>')
 def excluir_preco_kg(id):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM precos_kg WHERE id=?", (id,))
-    conn.commit()
-    conn.close()
+    if DB_TYPE == "postgres":
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM precos_kg WHERE id=:id"), {"id": id})
+    else:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM precos_kg WHERE id=?", (id,))
+        conn.commit()
+        conn.close()
     return redirect(url_for('index'))
 
 @app.route('/salvar', methods=['POST'])
@@ -210,32 +322,65 @@ def salvar():
     peso_kg_m = clean_num(request.form.get('peso_kg_m'))
     valor = clean_num(request.form.get('valor'))
     
-    if material == 'PERFIL' and peso_kg_m > 0 and cor:
-        conn_temp = sqlite3.connect(DB_NAME)
-        cur_temp = conn_temp.cursor()
-        cur_temp.execute("SELECT preco_kg FROM precos_kg WHERE UPPER(cor) = UPPER(?)", (cor,))
-        p_row = cur_temp.fetchone()
-        conn_temp.close()
-        if p_row:
-            preco_kg = p_row[0]
-            valor = preco_kg * peso_kg_m * 6.0
-
-    img = encontrar_imagem_na_pasta(codigo)
-    
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    if id_reg:
-        cursor.execute('''
-            UPDATE acessorios SET imagem=?, codigo=?, descricao=?, fornecedor=?, linha=?, cor=?, medida=?, sistema=?, valor=?, observacao=?, estoque=?, nescessario=?, material=?, peso_kg_m=? 
-            WHERE id=?
-        ''', (img, codigo, descricao, fornecedor, linha, cor, medida, sistema, valor, observacao, estoque, nescessario, material, peso_kg_m, id_reg))
+    # Tratamento de upload de imagem individual pelo modal
+    file = request.files.get('imagem_file')
+    img = ""
+    if file and file.filename:
+        file.save(os.path.join(UPLOAD_FOLDER, file.filename))
+        img = file.filename
     else:
-        cursor.execute('''
-            INSERT INTO acessorios (imagem, codigo, descricao, fornecedor, linha, cor, medida, sistema, valor, observacao, estoque, nescessario, material, peso_kg_m) 
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        ''', (img, codigo, descricao, fornecedor, linha, cor, medida, sistema, valor, observacao, estoque, nescessario, material, peso_kg_m))
-    conn.commit()
-    conn.close()
+        img = encontrar_imagem_na_pasta(codigo)
+
+    if material == 'PERFIL' and peso_kg_m > 0 and cor:
+        if DB_TYPE == "postgres":
+            with engine.connect() as conn:
+                res = conn.execute(text("SELECT preco_kg FROM precos_kg WHERE UPPER(cor) = UPPER(:cor)"), {"cor": cor})
+                p_row = res.fetchone()
+                if p_row:
+                    valor = p_row[0] * peso_kg_m * 6.0
+        else:
+            conn_temp = sqlite3.connect(DB_NAME)
+            cur_temp = conn_temp.cursor()
+            cur_temp.execute("SELECT preco_kg FROM precos_kg WHERE UPPER(cor) = UPPER(?)", (cor,))
+            p_row = cur_temp.fetchone()
+            conn_temp.close()
+            if p_row:
+                valor = p_row[0] * peso_kg_m * 6.0
+
+    if DB_TYPE == "postgres":
+        with engine.begin() as conn:
+            if id_reg:
+                if not img:
+                    res_img = conn.execute(text("SELECT imagem FROM acessorios WHERE id=:id"), {"id": id_reg}).fetchone()
+                    img = res_img[0] if res_img else ""
+                conn.execute(text('''
+                    UPDATE acessorios SET imagem=:img, codigo=:codigo, descricao=:descricao, fornecedor=:fornecedor, linha=:linha, cor=:cor, medida=:medida, sistema=:sistema, valor=:valor, observacao=:observacao, estoque=:estoque, nescessario=:nescessario, material=:material, peso_kg_m=:peso_kg_m 
+                    WHERE id=:id
+                '''), {"img": img, "codigo": codigo, "descricao": descricao, "fornecedor": fornecedor, "linha": linha, "cor": cor, "medida": medida, "sistema": sistema, "valor": valor, "observacao": observacao, "estoque": estoque, "nescessario": nescessario, "material": material, "peso_kg_m": peso_kg_m, "id": id_reg})
+            else:
+                conn.execute(text('''
+                    INSERT INTO acessorios (imagem, codigo, descricao, fornecedor, linha, cor, medida, sistema, valor, observacao, estoque, nescessario, material, peso_kg_m) 
+                    VALUES (:img, :codigo, :descricao, :fornecedor, :linha, :cor, :medida, :sistema, :valor, :observacao, :estoque, :nescessario, :material, :peso_kg_m)
+                '''), {"img": img, "codigo": codigo, "descricao": descricao, "fornecedor": fornecedor, "linha": linha, "cor": cor, "medida": medida, "sistema": sistema, "valor": valor, "observacao": observacao, "estoque": estoque, "nescessario": nescessario, "material": material, "peso_kg_m": peso_kg_m})
+    else:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        if id_reg:
+            if not img:
+                cursor.execute("SELECT imagem FROM acessorios WHERE id=?", (id_reg,))
+                r_img = cursor.fetchone()
+                img = r_img[0] if r_img else ""
+            cursor.execute('''
+                UPDATE acessorios SET imagem=?, codigo=?, descricao=?, fornecedor=?, linha=?, cor=?, medida=?, sistema=?, valor=?, observacao=?, estoque=?, nescessario=?, material=?, peso_kg_m=? 
+                WHERE id=?
+            ''', (img, codigo, descricao, fornecedor, linha, cor, medida, sistema, valor, observacao, estoque, nescessario, material, peso_kg_m, id_reg))
+        else:
+            cursor.execute('''
+                INSERT INTO acessorios (imagem, codigo, descricao, fornecedor, linha, cor, medida, sistema, valor, observacao, estoque, nescessario, material, peso_kg_m) 
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ''', (img, codigo, descricao, fornecedor, linha, cor, medida, sistema, valor, observacao, estoque, nescessario, material, peso_kg_m))
+        conn.commit()
+        conn.close()
     return redirect(url_for('index'))
 
 @app.route('/movimentar', methods=['POST'])
@@ -247,30 +392,47 @@ def movimentar():
     if qtd <= 0:
         return redirect(url_for('index'))
         
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT codigo, descricao, estoque, nescessario FROM acessorios WHERE id=?", (id_reg,))
-    row = cursor.fetchone()
-    
-    if row:
-        codigo, descricao, estoque, necessario = row[0], row[1], row[2], row[3]
-        data_atual = datetime.now().strftime('%d/%m/%Y %H:%M')
-        
-        if tipo == 'ENTRADA':
-            novo_estoque = estoque + qtd
-            cursor.execute("UPDATE acessorios SET estoque=? WHERE id=?", (novo_estoque, id_reg))
-        elif tipo == 'SAIDA':
-            novo_estoque = max(0, estoque - qtd)
-            novo_necessario = max(0, necessario - qtd)
-            cursor.execute("UPDATE acessorios SET estoque=?, nescessario=? WHERE id=?", (novo_estoque, novo_necessario, id_reg))
-            
-        cursor.execute('''
-            INSERT INTO movimentacoes (acessorio_id, codigo, descricao, tipo, quantidade, data)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (id_reg, codigo, descricao, tipo, qtd, data_atual))
-        
-        conn.commit()
-    conn.close()
+    if DB_TYPE == "postgres":
+        with engine.begin() as conn:
+            res = conn.execute(text("SELECT codigo, descricao, estoque, nescessario FROM acessorios WHERE id=:id"), {"id": id_reg})
+            row = res.fetchone()
+            if row:
+                codigo, descricao, estoque, necessario = row[0], row[1], row[2], row[3]
+                data_atual = datetime.now().strftime('%d/%m/%Y %H:%M')
+                
+                if tipo == 'ENTRADA':
+                    novo_estoque = estoque + qtd
+                    conn.execute(text("UPDATE acessorios SET estoque=:estoque WHERE id=:id"), {"estoque": novo_estoque, "id": id_reg})
+                elif tipo == 'SAIDA':
+                    novo_estoque = max(0, estoque - qtd)
+                    novo_necessario = max(0, necessario - qtd)
+                    conn.execute(text("UPDATE acessorios SET estoque=:estoque, nescessario=:nescessario WHERE id=:id"), {"estoque": novo_estoque, "nescessario": novo_necessario, "id": id_reg})
+                    
+                conn.execute(text('''
+                    INSERT INTO movimentacoes (acessorio_id, codigo, descricao, tipo, quantidade, data)
+                    VALUES (:id_reg, :codigo, :descricao, :tipo, :qtd, :data)
+                '''), {"id_reg": id_reg, "codigo": codigo, "descricao": descricao, "tipo": tipo, "qtd": qtd, "data": data_atual})
+    else:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("SELECT codigo, descricao, estoque, nescessario FROM acessorios WHERE id=?", (id_reg,))
+        row = cursor.fetchone()
+        if row:
+            codigo, descricao, estoque, necessario = row[0], row[1], row[2], row[3]
+            data_atual = datetime.now().strftime('%d/%m/%Y %H:%M')
+            if tipo == 'ENTRADA':
+                novo_estoque = estoque + qtd
+                cursor.execute("UPDATE acessorios SET estoque=? WHERE id=?", (novo_estoque, id_reg))
+            elif tipo == 'SAIDA':
+                novo_estoque = max(0, estoque - qtd)
+                novo_necessario = max(0, necessario - qtd)
+                cursor.execute("UPDATE acessorios SET estoque=?, nescessario=? WHERE id=?", (novo_estoque, novo_necessario, id_reg))
+            cursor.execute('''
+                INSERT INTO movimentacoes (acessorio_id, codigo, descricao, tipo, quantidade, data)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (id_reg, codigo, descricao, tipo, qtd, data_atual))
+            conn.commit()
+            conn.close()
     salvar_historico_arquivo()
     return redirect(url_for('index'))
 
@@ -280,41 +442,66 @@ def excluir_movimento(id):
     senha = request.form.get('senha_autorizacao', '').strip()
     
     if nome.lower() == "admin" and senha == "1234":
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM movimentacoes WHERE id=?", (id,))
-        conn.commit()
-        conn.close()
+        if DB_TYPE == "postgres":
+            with engine.begin() as conn:
+                conn.execute(text("DELETE FROM movimentacoes WHERE id=:id"), {"id": id})
+        else:
+            conn = sqlite3.connect(DB_NAME)
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM movimentacoes WHERE id=?", (id,))
+            conn.commit()
+            conn.close()
         salvar_historico_arquivo()
-    
     return redirect(url_for('relatorio_movimentacoes'))
 
 @app.route('/relatorio_movimentacoes')
 def relatorio_movimentacoes():
-    conn = sqlite3.connect(DB_NAME)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM movimentacoes ORDER BY id DESC")
-    movs = cursor.fetchall()
-    
-    cursor.execute("SELECT * FROM acessorios ORDER BY codigo ASC")
-    registros = cursor.fetchall()
-    cursor.execute("SELECT COUNT(*), SUM(valor * COALESCE(estoque, 0)), COUNT(DISTINCT fornecedor) FROM acessorios")
-    stats = cursor.fetchone()
-    
-    cursor.execute("SELECT * FROM precos_kg ORDER BY cor ASC")
-    precos_cores = cursor.fetchall()
-    conn.close()
+    movs = []
+    registros = []
+    stats = (0, 0.0, 0)
+    precos_cores = []
+
+    if DB_TYPE == "postgres":
+        with engine.connect() as conn:
+            res_mov = conn.execute(text("SELECT * FROM movimentacoes ORDER BY id DESC"))
+            cols_mov = res_mov.keys()
+            movs = [dict(zip(cols_mov, r)) for r in res_mov.fetchall()]
+
+            res_reg = conn.execute(text("SELECT * FROM acessorios ORDER BY codigo ASC"))
+            cols_reg = res_reg.keys()
+            registros = [dict(zip(cols_reg, r)) for r in res_reg.fetchall()]
+
+            res_stats = conn.execute(text("SELECT COUNT(*), SUM(valor * COALESCE(estoque, 0)), COUNT(DISTINCT fornecedor) FROM acessorios"))
+            stats_row = res_stats.fetchone()
+            if stats_row: stats = stats_row
+
+            res_precos = conn.execute(text("SELECT * FROM precos_kg ORDER BY cor ASC"))
+            precos_cores = res_precos.fetchall()
+    else:
+        conn = sqlite3.connect(DB_NAME)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM movimentacoes ORDER BY id DESC")
+        movs = cursor.fetchall()
+        cursor.execute("SELECT * FROM acessorios ORDER BY codigo ASC")
+        registros = cursor.fetchall()
+        cursor.execute("SELECT COUNT(*), SUM(valor * COALESCE(estoque, 0)), COUNT(DISTINCT fornecedor) FROM acessorios")
+        stats = cursor.fetchone()
+        cursor.execute("SELECT * FROM precos_kg ORDER BY cor ASC")
+        precos_cores = cursor.fetchall()
+        conn.close()
     
     return render_template('index.html', 
                            registros=registros, 
                            total_itens=stats[0] or 0, 
                            soma_valor=stats[1] or 0.0, 
                            total_fornecedores=stats[2] or 0, 
-                           dropdowns=get_most_used_values(),
-                           precos_cores=precos_cores,
-                           movimentacoes=movs,
-                           abrir_modal_relatorio=True)
+                           dropdowns=get_most_used_values(), 
+                           precos_cores=precos_cores, 
+                           movimentacoes=movs, 
+                           abrir_modal_relatorio=True,
+                           coluna='codigo',
+                           termo='')
 
 @app.route('/baixar_historico_arquivo')
 def baixar_historico_arquivo():
@@ -377,28 +564,44 @@ def exportar_carrinho_pdf():
 
 @app.route('/duplicar/<int:id>')
 def duplicar(id):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT imagem, codigo, descricao, fornecedor, linha, cor, medida, sistema, valor, observacao, estoque, nescessario, material, peso_kg_m FROM acessorios WHERE id=?", (id,))
-    row = cursor.fetchone()
-    if row:
-        novo_codigo = str(row[1]) + "_copia"
-        img = encontrar_imagem_na_pasta(novo_codigo) or row[0]
-        cursor.execute('''
-            INSERT INTO acessorios (imagem, codigo, descricao, fornecedor, linha, cor, medida, sistema, valor, observacao, estoque, nescessario, material, peso_kg_m) 
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        ''', (img, novo_codigo, row[2], row[3], row[4], row[5], row[6], row[7], row[8], row[9], row[10], row[11], row[12], row[13]))
-        conn.commit()
-    conn.close()
+    if DB_TYPE == "postgres":
+        with engine.begin() as conn:
+            res = conn.execute(text("SELECT imagem, codigo, descricao, fornecedor, linha, cor, medida, sistema, valor, observacao, estoque, nescessario, material, peso_kg_m FROM acessorios WHERE id=:id"), {"id": id})
+            row = res.fetchone()
+            if row:
+                novo_codigo = str(row[1]) + "_copia"
+                img = encontrar_imagem_na_pasta(novo_codigo) or row[0]
+                conn.execute(text('''
+                    INSERT INTO acessorios (imagem, codigo, descricao, fornecedor, linha, cor, medida, sistema, valor, observacao, estoque, nescessario, material, peso_kg_m) 
+                    VALUES (:img, :codigo, :descricao, :fornecedor, :linha, :cor, :medida, :sistema, :valor, :observacao, :estoque, :nescessario, :material, :peso_kg_m)
+                '''), {"img": img, "codigo": novo_codigo, "descricao": row[2], "fornecedor": row[3], "linha": row[4], "cor": row[5], "medida": row[6], "sistema": row[7], "valor": row[8], "observacao": row[9], "estoque": row[10], "nescessario": row[11], "material": row[12], "peso_kg_m": row[13]})
+    else:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("SELECT imagem, codigo, descricao, fornecedor, linha, cor, medida, sistema, valor, observacao, estoque, nescessario, material, peso_kg_m FROM acessorios WHERE id=?", (id,))
+        row = cursor.fetchone()
+        if row:
+            novo_codigo = str(row[1]) + "_copia"
+            img = encontrar_imagem_na_pasta(novo_codigo) or row[0]
+            cursor.execute('''
+                INSERT INTO acessorios (imagem, codigo, descricao, fornecedor, linha, cor, medida, sistema, valor, observacao, estoque, nescessario, material, peso_kg_m) 
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ''', (img, novo_codigo, row[2], row[3], row[4], row[5], row[6], row[7], row[8], row[9], row[10], row[11], row[12], row[13]))
+            conn.commit()
+            conn.close()
     return redirect(url_for('index'))
 
 @app.route('/excluir/<int:id>')
 def excluir(id):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM acessorios WHERE id=?", (id,))
-    conn.commit()
-    conn.close()
+    if DB_TYPE == "postgres":
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM acessorios WHERE id=:id"), {"id": id})
+    else:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM acessorios WHERE id=?", (id,))
+        conn.commit()
+        conn.close()
     return redirect(url_for('index'))
 
 @app.route('/importar_excel', methods=['POST'])
@@ -414,8 +617,6 @@ def importar_excel():
             else: df = pd.read_excel(file_path)
             
             df.columns = [str(c).lower().strip() for c in df.columns]
-            conn = sqlite3.connect(DB_NAME)
-            cursor = conn.cursor()
             
             for _, row in df.iterrows():
                 codigo = str(row.get('codigo', '')).strip()
@@ -437,54 +638,80 @@ def importar_excel():
                 valor = clean_num(row.get('valor', 0))
 
                 if material == 'PERFIL' and peso_kg_m > 0 and cor:
-                    cursor.execute("SELECT preco_kg FROM precos_kg WHERE UPPER(cor) = UPPER(?)", (cor,))
-                    p_row = cursor.fetchone()
-                    if p_row: valor = p_row[0] * peso_kg_m * 6.0
+                    if DB_TYPE == "postgres":
+                        with engine.connect() as conn_p:
+                            res_p = conn_p.execute(text("SELECT preco_kg FROM precos_kg WHERE UPPER(cor) = UPPER(:cor)"), {"cor": cor}).fetchone()
+                            if res_p: valor = res_p[0] * peso_kg_m * 6.0
+                    else:
+                        conn_p = sqlite3.connect(DB_NAME)
+                        cur_p = conn_p.cursor()
+                        cur_p.execute("SELECT preco_kg FROM precos_kg WHERE UPPER(cor) = UPPER(?)", (cor,))
+                        p_row = cur_p.fetchone()
+                        conn_p.close()
+                        if p_row: valor = p_row[0] * peso_kg_m * 6.0
                 
                 img_final = encontrar_imagem_na_pasta(codigo)
-                if not img_final and img_csv and img_csv.lower() != 'nan': img_final = img_csv
+                if not img_final and img_csv and img_csv.lower() != 'nan': img_final = os.path.basename(img_csv)
 
-                cursor.execute("SELECT id FROM acessorios WHERE codigo = ?", (codigo,))
-                existe = cursor.fetchone()
-                
-                if existe:
-                    cursor.execute('''
-                        UPDATE acessorios SET imagem=?, descricao=?, fornecedor=?, linha=?, cor=?, medida=?, sistema=?, valor=?, observacao=?, estoque=?, nescessario=?, material=?, peso_kg_m=? 
-                        WHERE id=?
-                    ''', (img_final, descricao, fornecedor, linha, cor, medida, sistema, valor, observacao, estoque, nescessario, material, peso_kg_m, existe[0]))
+                if DB_TYPE == "postgres":
+                    with engine.begin() as conn_sub:
+                        existe = conn_sub.execute(text("SELECT id FROM acessorios WHERE codigo = :codigo"), {"codigo": codigo}).fetchone()
+                        if existe:
+                            conn_sub.execute(text('''
+                                UPDATE acessorios SET imagem=:img, descricao=:descricao, fornecedor=:fornecedor, linha=:linha, cor=:cor, medida=:medida, sistema=:sistema, valor=:valor, observacao=:observacao, estoque=:estoque, nescessario=:nescessario, material=:material, peso_kg_m=:peso_kg_m 
+                                WHERE id=:id
+                            '''), {"img": img_final, "descricao": descricao, "fornecedor": fornecedor, "linha": linha, "cor": cor, "medida": medida, "sistema": sistema, "valor": valor, "observacao": observacao, "estoque": estoque, "nescessario": nescessario, "material": material, "peso_kg_m": peso_kg_m, "id": existe[0]})
+                        else:
+                            conn_sub.execute(text('''
+                                INSERT INTO acessorios (imagem, codigo, descricao, fornecedor, linha, cor, medida, sistema, valor, observacao, estoque, nescessario, material, peso_kg_m) 
+                                VALUES (:img, :codigo, :descricao, :fornecedor, :linha, :cor, :medida, :sistema, :valor, :observacao, :estoque, :nescessario, :material, :peso_kg_m)
+                            '''), {"img": img_final, "codigo": codigo, "descricao": descricao, "fornecedor": fornecedor, "linha": linha, "cor": cor, "medida": medida, "sistema": sistema, "valor": valor, "observacao": observacao, "estoque": estoque, "nescessario": nescessario, "material": material, "peso_kg_m": peso_kg_m})
                 else:
-                    cursor.execute('''
-                        INSERT INTO acessorios (imagem, codigo, descricao, fornecedor, linha, cor, medida, sistema, valor, observacao, estoque, nescessario, material, peso_kg_m) 
-                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                    ''', (img_final, codigo, descricao, fornecedor, linha, cor, medida, sistema, valor, observacao, estoque, nescessario, material, peso_kg_m))
-            conn.commit()
-            conn.close()
+                    conn_sub = sqlite3.connect(DB_NAME)
+                    cursor_sub = conn_sub.cursor()
+                    cursor_sub.execute("SELECT id FROM acessorios WHERE codigo = ?", (codigo,))
+                    existe = cursor_sub.fetchone()
+                    if existe:
+                        cursor_sub.execute('''
+                            UPDATE acessorios SET imagem=?, descricao=?, fornecedor=?, linha=?, cor=?, medida=?, sistema=?, valor=?, observacao=?, estoque=?, nescessario=?, material=?, peso_kg_m=? 
+                            WHERE id=?
+                        ''', (img_final, descricao, fornecedor, linha, cor, medida, sistema, valor, observacao, estoque, nescessario, material, peso_kg_m, existe[0]))
+                    else:
+                        cursor_sub.execute('''
+                            INSERT INTO acessorios (imagem, codigo, descricao, fornecedor, linha, cor, medida, sistema, valor, observacao, estoque, nescessario, material, peso_kg_m) 
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        ''', (img_final, codigo, descricao, fornecedor, linha, cor, medida, sistema, valor, observacao, estoque, nescessario, material, peso_kg_m))
+                    conn_sub.commit()
+                    conn_sub.close()
         except Exception as e: print(f"Erro na importação: {e}")
     return redirect(url_for('index'))
 
 @app.route('/exportar_excel')
 def exportar_excel():
-    conn = sqlite3.connect(DB_NAME)
-    df = pd.read_sql_query("SELECT * FROM acessorios", conn)
-    conn.close()
+    if DB_TYPE == "postgres":
+        df = pd.read_sql("SELECT * FROM acessorios", engine)
+    else:
+        conn = sqlite3.connect(DB_NAME)
+        df = pd.read_sql_query("SELECT * FROM acessorios", conn)
+        conn.close()
     file_path = os.path.join(EXPORTS_EXCEL_DIR, "relatorio.xlsx")
     df.to_excel(file_path, index=False)
     return send_file(file_path, as_attachment=True)
 
 @app.route('/exportar_csv')
 def exportar_csv():
-    conn = sqlite3.connect(DB_NAME)
-    df = pd.read_sql_query("SELECT * FROM acessorios", conn)
-    conn.close()
+    if DB_TYPE == "postgres":
+        df = pd.read_sql("SELECT * FROM acessorios", engine)
+    else:
+        conn = sqlite3.connect(DB_NAME)
+        df = pd.read_sql_query("SELECT * FROM acessorios", conn)
+        conn.close()
     file_path = os.path.join(EXPORTS_EXCEL_DIR, "relatorio.csv")
     df.to_csv(file_path, index=False, sep=';', encoding='utf-8-sig')
     return send_file(file_path, as_attachment=True)
 
 @app.route('/exportar_pdf', methods=['POST'])
 def exportar_pdf():
-    ids_json = request.form.get('ids_filtrados')
-    ids_filtrados = json.loads(ids_json) if ids_json else []
-
     colunas_selecionadas = request.form.getlist('colunas')
     if not colunas_selecionadas:
         colunas_selecionadas = ['codigo', 'descricao', 'cor', 'fornecedor', 'medida', 'sistema', 'linha', 'observacao', 'valor', 'material', 'peso_kg_m']
@@ -493,18 +720,15 @@ def exportar_pdf():
     page_size = portrait(letter) if orientacao == 'retrato' else landscape(letter)
     usable_width = 552 if orientacao == 'retrato' else 732
 
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    
-    if ids_filtrados:
-        placeholders = ','.join(['?'] * len(ids_filtrados))
-        query = f"SELECT imagem, codigo, descricao, fornecedor, linha, cor, medida, sistema, valor, observacao, material, peso_kg_m FROM acessorios WHERE id IN ({placeholders})"
-        cursor.execute(query, ids_filtrados)
+    if DB_TYPE == "postgres":
+        df = pd.read_sql("SELECT imagem, codigo, descricao, fornecedor, linha, cor, medida, sistema, valor, observacao, material, peso_kg_m FROM acessorios", engine)
+        rows = df.values.tolist()
     else:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
         cursor.execute("SELECT imagem, codigo, descricao, fornecedor, linha, cor, medida, sistema, valor, observacao, material, peso_kg_m FROM acessorios")
-        
-    rows = cursor.fetchall()
-    conn.close()
+        rows = cursor.fetchall()
+        conn.close()
 
     file_path = os.path.join(EXPORTS_PDF_DIR, "relatorio_acessorios.pdf")
     doc = SimpleDocTemplate(file_path, pagesize=page_size, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
@@ -531,7 +755,7 @@ def exportar_pdf():
         for c in valid_cols:
             idx = col_map[c][0]
             if idx == 0:
-                img_nome = row[0]
+                img_nome = os.path.basename(str(row[0])) if row[0] else ""
                 img_element = Paragraph("Sem Foto", style_cell)
                 if img_nome:
                     img_path = os.path.join(UPLOAD_FOLDER, img_nome)
