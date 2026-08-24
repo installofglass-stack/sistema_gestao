@@ -134,7 +134,6 @@ def clean_num(val):
     try:
         if val is None or pd.isna(val) or str(val).lower() == 'nan': return 0.0
         s_str = str(val).strip().replace('R$', '').replace(' ', '')
-        # Se vier com ponto e vírgula misturados
         if ',' in s_str and '.' in s_str:
             if s_str.rfind(',') > s_str.rfind('.'):
                 s_str = s_str.replace('.', '').replace(',', '.')
@@ -144,7 +143,6 @@ def clean_num(val):
             s_str = s_str.replace(',', '.')
         
         num = float(s_str)
-        # Trava de segurança para valores absurdos gerados por erro de leitura
         if num > 999999.0: 
             return 0.0
         return round(num, 2)
@@ -246,21 +244,6 @@ def index():
         cursor.execute("SELECT * FROM precos_kg ORDER BY cor ASC")
         precos_cores = cursor.fetchall()
         conn.close()
-
-    for reg in registros:
-        if not reg.get('imagem') and reg.get('codigo'):
-            img = encontrar_imagem_na_pasta(reg['codigo'])
-            if img:
-                reg['imagem'] = img
-                if DB_TYPE == "postgres":
-                    with engine.begin() as conn_up:
-                        conn_up.execute(text("UPDATE acessorios SET imagem = :img WHERE id = :id"), {"img": img, "id": reg['id']})
-                else:
-                    conn_up = sqlite3.connect(DB_NAME)
-                    cur_up = conn_up.cursor()
-                    cur_up.execute("UPDATE acessorios SET imagem = ? WHERE id = ?", (img, reg['id']))
-                    conn_up.commit()
-                    conn_up.close()
 
     return render_template('index.html', 
                            registros=registros, 
