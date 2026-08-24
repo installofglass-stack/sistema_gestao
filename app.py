@@ -193,7 +193,10 @@ def index():
                 for key in r_dict:
                     if isinstance(r_dict[key], str):
                         r_dict[key] = fix_text(r_dict[key])
-                if r_dict.get('imagem'):
+                
+                if not r_dict.get('imagem') or str(r_dict.get('imagem')).lower() == 'nan':
+                    r_dict['imagem'] = ""
+                else:
                     r_dict['imagem'] = os.path.basename(r_dict['imagem'])
                 registros.append(r_dict)
             
@@ -214,7 +217,10 @@ def index():
             for key in r_dict:
                 if isinstance(r_dict[key], str):
                     r_dict[key] = fix_text(r_dict[key])
-            if r_dict.get('imagem'):
+            
+            if not r_dict.get('imagem') or str(r_dict.get('imagem')).lower() == 'nan':
+                r_dict['imagem'] = ""
+            else:
                 r_dict['imagem'] = os.path.basename(r_dict['imagem'])
             registros.append(r_dict)
             
@@ -224,21 +230,21 @@ def index():
         precos_cores = cursor.fetchall()
         conn.close()
 
-    # Atualizar imagens ausentes se necessário
+    # Atualizar imagens ausentes ou inválidas automaticamente
     for reg in registros:
         if not reg.get('imagem') and reg.get('codigo'):
             img = encontrar_imagem_na_pasta(reg['codigo'])
             if img:
                 reg['imagem'] = img
                 if DB_TYPE == "postgres":
-                    with engine.begin() as conn:
-                        conn.execute(text("UPDATE acessorios SET imagem = :img WHERE id = :id"), {"img": img, "id": reg['id']})
+                    with engine.begin() as conn_up:
+                        conn_up.execute(text("UPDATE acessorios SET imagem = :img WHERE id = :id"), {"img": img, "id": reg['id']})
                 else:
-                    conn = sqlite3.connect(DB_NAME)
-                    cursor = conn.cursor()
-                    cursor.execute("UPDATE acessorios SET imagem = ? WHERE id = ?", (img, reg['id']))
-                    conn.commit()
-                    conn.close()
+                    conn_up = sqlite3.connect(DB_NAME)
+                    cur_up = conn_up.cursor()
+                    cur_up.execute("UPDATE acessorios SET imagem = ? WHERE id = ?", (img, reg['id']))
+                    conn_up.commit()
+                    conn_up.close()
 
     return render_template('index.html', 
                            registros=registros, 
