@@ -42,11 +42,16 @@ else:
 
 def fix_text(val):
     if not val or pd.isna(val) or str(val).lower() == 'nan': return ""
-    if not isinstance(val, str): return val
-    try:
-        return val.encode('latin1').decode('utf-8')
-    except:
-        return val
+    if not isinstance(val, str): val = str(val)
+    
+    # Tenta corrigir se o texto veio corrompido com codificação antiga
+    for encoding_origem in ['latin1', 'cp1252', 'iso-8859-1']:
+        try:
+            texto_corrigido = val.encode(encoding_origem).decode('utf-8')
+            return texto_corrigido
+        except:
+            continue
+    return val
 
 def init_db():
     if DB_TYPE == "postgres":
