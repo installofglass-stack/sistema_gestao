@@ -13,18 +13,17 @@ from sqlalchemy import create_engine, text
 app = Flask(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BASE_DIR, 'data')
 UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
 EXPORTS_PDF_DIR = os.path.join(BASE_DIR, 'exports', 'pdf')
 EXPORTS_EXCEL_DIR = os.path.join(BASE_DIR, 'exports', 'excel')
 IMPORT_DIR = os.path.join(BASE_DIR, 'imports')
 
-for folder in [DATA_DIR, UPLOAD_FOLDER, EXPORTS_PDF_DIR, EXPORTS_EXCEL_DIR, IMPORT_DIR]:
+for folder in [UPLOAD_FOLDER, EXPORTS_PDF_DIR, EXPORTS_EXCEL_DIR, IMPORT_DIR]:
     os.makedirs(folder, exist_ok=True)
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
-# Configuração do Banco de Dados: PostgreSQL no Render ou SQLite local no PC
+# Configuração do PostgreSQL no Render ou SQLite local de fallback
 DATABASE_URL = os.environ.get('DATABASE_URL')
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
@@ -33,11 +32,14 @@ if DATABASE_URL:
     engine = create_engine(DATABASE_URL)
     DB_TYPE = "postgres"
 else:
+    DATA_DIR = os.path.join(BASE_DIR, 'data')
+    os.makedirs(DATA_DIR, exist_ok=True)
     DB_NAME = os.path.join(DATA_DIR, 'meu_estoque.db')
     DB_TYPE = "sqlite"
 
 def fix_text(val):
-    if not val or not isinstance(val, str): return val
+    if not val or pd.isna(val) or str(val).lower() == 'nan': return ""
+    if not isinstance(val, str): return val
     try:
         return val.encode('latin1').decode('utf-8')
     except:
@@ -130,7 +132,7 @@ init_db()
 
 def clean_num(val):
     try:
-        if val is None or pd.isna(val): return 0.0
+        if val is None or pd.isna(val) or str(val).lower() == 'nan': return 0.0
         s_str = str(val).strip().replace('R$', '').strip()
         if ',' in s_str and '.' in s_str:
             s_str = s_str.replace('.', '').replace(',', '.')
@@ -148,7 +150,7 @@ def salvar_historico_arquivo():
             conn = sqlite3.connect(DB_NAME)
             df = pd.read_sql_query("SELECT * FROM movimentacoes", conn)
             conn.close()
-        file_path = os.path.join(DATA_DIR, "historico_movimentacoes.csv")
+        file_path = os.path.join(BASE_DIR, "historico_movimentacoes.csv")
         df.to_csv(file_path, index=False, sep=';', encoding='utf-8-sig')
     except Exception as e:
         print(f"Erro ao salvar arquivo de histórico: {e}")
@@ -191,8 +193,11 @@ def index():
             for r in res_reg.fetchall():
                 r_dict = dict(zip(cols, r))
                 for key in r_dict:
-                    if isinstance(r_dict[key], str):
-                        r_dict[key] = fix_text(r_dict[key])
+                    val = r_dict[key]
+                    if pd.isna(val) or str(val).lower() == 'nan' or val is None:
+                        r_dict[key] = ""
+                    elif isinstance(val, str):
+                        r_dict[key] = fix_text(val)
                 
                 if not r_dict.get('imagem') or str(r_dict.get('imagem')).lower() == 'nan':
                     r_dict['imagem'] = ""
@@ -215,8 +220,11 @@ def index():
         for reg in registros_bruto:
             r_dict = dict(reg)
             for key in r_dict:
-                if isinstance(r_dict[key], str):
-                    r_dict[key] = fix_text(r_dict[key])
+                val = r_dict[key]
+                if pd.isna(val) or str(val).lower() == 'nan' or val is None:
+                    r_dict[key] = ""
+                elif isinstance(val, str):
+                    r_dict[key] = fix_text(val)
             
             if not r_dict.get('imagem') or str(r_dict.get('imagem')).lower() == 'nan':
                 r_dict['imagem'] = ""
@@ -230,7 +238,6 @@ def index():
         precos_cores = cursor.fetchall()
         conn.close()
 
-    # Atualizar imagens ausentes ou inválidas automaticamente
     for reg in registros:
         if not reg.get('imagem') and reg.get('codigo'):
             img = encontrar_imagem_na_pasta(reg['codigo'])
@@ -486,7 +493,7 @@ def relatorio_movimentacoes():
 
 @app.route('/baixar_historico_arquivo')
 def baixar_historico_arquivo():
-    file_path = os.path.join(DATA_DIR, "historico_movimentacoes.csv")
+    file_path = os.path.join(BASE_DIR, "historico_movimentacoes.csv")
     if os.path.exists(file_path):
         return send_file(file_path, as_attachment=True)
     return redirect(url_for('index'))
@@ -603,15 +610,17 @@ def importar_excel():
                 codigo = str(row.get('codigo', '')).strip()
                 if not codigo or codigo.lower() == 'nan': continue
                 
-                descricao = str(row.get('descricao', ''))
-                fornecedor = str(row.get('fornecedor', ''))
-                linha = str(row.get('linha', ''))
-                cor = str(row.get('cor', '')).strip().upper()
-                medida = str(row.get('medida', ''))
-                sistema = str(row.get('sistema', ''))
-                observacao = str(row.get('observacao', ''))
-                material = str(row.get('material', '')).strip().upper()
+                descricao = "" if pd.isna(row.get('descricao')) or str(row.get('descricao')).lower() == 'nan' else str(row.get('descricao'))
+                fornecedor = "" if pd.isna(row.get('fornecedor')) or str(row.get('fornecedor')).lower() == 'nan' else str(row.get('fornecedor'))
+                linha = "" if pd.isna(row.get('linha')) or str(row.get('linha')).lower() == 'nan' else str(row.get('linha'))
+                cor = "" if pd.isna(row.get('cor')) or str(row.get('cor')).lower() == 'nan' else str(row.get('cor')).strip().upper()
+                medida = "" if pd.isna(row.get('medida')) or str(row.get('medida')).lower() == 'nan' else str(row.get('medida'))
+                sistema = "" if pd.isna(row.get('sistema')) or str(row.get('sistema')).lower() == 'nan' else str(row.get('sistema'))
+                observacao = "" if pd.isna(row.get('observacao')) or str(row.get('observacao')).lower() == 'nan' else str(row.get('observacao'))
+                material = "" if pd.isna(row.get('material')) or str(row.get('material')).lower() == 'nan' else str(row.get('material')).strip().upper()
+                
                 img_csv = str(row.get('imagem', row.get('image', ''))).strip()
+                if img_csv.lower() == 'nan': img_csv = ""
                 
                 estoque = int(clean_num(row.get('estoque', 0)))
                 nescessario = int(clean_num(row.get('nescessario', 0)))
@@ -632,7 +641,7 @@ def importar_excel():
                         if p_row: valor = p_row[0] * peso_kg_m * 6.0
                 
                 img_final = encontrar_imagem_na_pasta(codigo)
-                if not img_final and img_csv and img_csv.lower() != 'nan': img_final = os.path.basename(img_csv)
+                if not img_final and img_csv: img_final = os.path.basename(img_csv)
 
                 if DB_TYPE == "postgres":
                     with engine.begin() as conn_sub:
@@ -675,6 +684,9 @@ def exportar_excel():
         conn = sqlite3.connect(DB_NAME)
         df = pd.read_sql_query("SELECT * FROM acessorios", conn)
         conn.close()
+    
+    # Limpa os 'nan' do DataFrame exportado para Excel
+    df = df.fillna("")
     file_path = os.path.join(EXPORTS_EXCEL_DIR, "relatorio.xlsx")
     df.to_excel(file_path, index=False)
     return send_file(file_path, as_attachment=True)
@@ -687,6 +699,9 @@ def exportar_csv():
         conn = sqlite3.connect(DB_NAME)
         df = pd.read_sql_query("SELECT * FROM acessorios", conn)
         conn.close()
+    
+    # Limpa os 'nan' do DataFrame exportado para CSV
+    df = df.fillna("")
     file_path = os.path.join(EXPORTS_EXCEL_DIR, "relatorio.csv")
     df.to_csv(file_path, index=False, sep=';', encoding='utf-8-sig')
     return send_file(file_path, as_attachment=True)
@@ -750,7 +765,7 @@ def exportar_pdf():
         for c in valid_cols:
             idx = col_map[c][0]
             if idx == 0:
-                img_nome = os.path.basename(str(row[0])) if row[0] else ""
+                img_nome = os.path.basename(str(row[0])) if row[0] and str(row[0]).lower() != 'nan' else ""
                 img_element = Paragraph("Sem Foto", style_cell)
                 if img_nome:
                     img_path = os.path.join(UPLOAD_FOLDER, img_nome)
@@ -763,12 +778,13 @@ def exportar_pdf():
                 row_data.append(img_element)
             elif idx == 8:
                 val = row[8]
-                row_data.append(Paragraph(f"R$ {val:.2f}" if val is not None else "R$ 0.00", style_cell))
+                row_data.append(Paragraph(f"R$ {val:.2f}" if val is not None and not pd.isna(val) else "R$ 0.00", style_cell))
             elif idx == 11:
                 p_m = row[11]
-                row_data.append(Paragraph(f"{p_m:.3f}" if p_m else "0.000", style_cell))
+                row_data.append(Paragraph(f"{p_m:.3f}" if p_m and not pd.isna(p_m) else "0.000", style_cell))
             else:
-                txt = fix_text(str(row[idx] if row[idx] is not None and str(row[idx]).lower() != 'none' else ""))
+                raw_val = row[idx]
+                txt = fix_text(raw_val) if raw_val is not None and not pd.isna(raw_val) and str(raw_val).lower() != 'nan' else ""
                 sty = style_desc if c in ['descricao', 'observacao'] else style_cell
                 row_data.append(Paragraph(txt, sty))
         data.append(row_data)
