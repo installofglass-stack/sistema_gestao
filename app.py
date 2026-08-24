@@ -133,12 +133,21 @@ init_db()
 def clean_num(val):
     try:
         if val is None or pd.isna(val) or str(val).lower() == 'nan': return 0.0
-        s_str = str(val).strip().replace('R$', '').strip()
+        s_str = str(val).strip().replace('R$', '').replace(' ', '')
+        # Se vier com ponto e vírgula misturados
         if ',' in s_str and '.' in s_str:
-            s_str = s_str.replace('.', '').replace(',', '.')
+            if s_str.rfind(',') > s_str.rfind('.'):
+                s_str = s_str.replace('.', '').replace(',', '.')
+            else:
+                s_str = s_str.replace(',', '')
         elif ',' in s_str:
             s_str = s_str.replace(',', '.')
-        return round(float(s_str), 3)
+        
+        num = float(s_str)
+        # Trava de segurança para valores absurdos gerados por erro de leitura
+        if num > 999999.0: 
+            return 0.0
+        return round(num, 2)
     except:
         return 0.0
 
@@ -326,16 +335,16 @@ def salvar():
             with engine.connect() as conn:
                 res = conn.execute(text("SELECT preco_kg FROM precos_kg WHERE UPPER(cor) = UPPER(:cor)"), {"cor": cor})
                 p_row = res.fetchone()
-                if p_row:
-                    valor = p_row[0] * peso_kg_m * 6.0
+                if p_row and p_row[0]:
+                    valor = round(float(p_row[0]) * peso_kg_m * 6.0, 2)
         else:
             conn_temp = sqlite3.connect(DB_NAME)
             cur_temp = conn_temp.cursor()
             cur_temp.execute("SELECT preco_kg FROM precos_kg WHERE UPPER(cor) = UPPER(?)", (cor,))
             p_row = cur_temp.fetchone()
             conn_temp.close()
-            if p_row:
-                valor = p_row[0] * peso_kg_m * 6.0
+            if p_row and p_row[0]:
+                valor = round(float(p_row[0]) * peso_kg_m * 6.0, 2)
 
     if DB_TYPE == "postgres":
         with engine.begin() as conn:
@@ -631,14 +640,16 @@ def importar_excel():
                     if DB_TYPE == "postgres":
                         with engine.connect() as conn_p:
                             res_p = conn_p.execute(text("SELECT preco_kg FROM precos_kg WHERE UPPER(cor) = UPPER(:cor)"), {"cor": cor}).fetchone()
-                            if res_p: valor = res_p[0] * peso_kg_m * 6.0
+                            if res_p and res_p[0]: 
+                                valor = round(float(res_p[0]) * peso_kg_m * 6.0, 2)
                     else:
                         conn_p = sqlite3.connect(DB_NAME)
                         cur_p = conn_p.cursor()
                         cur_p.execute("SELECT preco_kg FROM precos_kg WHERE UPPER(cor) = UPPER(?)", (cor,))
                         p_row = cur_p.fetchone()
                         conn_p.close()
-                        if p_row: valor = p_row[0] * peso_kg_m * 6.0
+                        if p_row and p_row[0]: 
+                            valor = round(float(p_row[0]) * peso_kg_m * 6.0, 2)
                 
                 img_final = encontrar_imagem_na_pasta(codigo)
                 if not img_final and img_csv: img_final = os.path.basename(img_csv)
@@ -685,7 +696,6 @@ def exportar_excel():
         df = pd.read_sql_query("SELECT * FROM acessorios", conn)
         conn.close()
     
-    # Limpa os 'nan' do DataFrame exportado para Excel
     df = df.fillna("")
     file_path = os.path.join(EXPORTS_EXCEL_DIR, "relatorio.xlsx")
     df.to_excel(file_path, index=False)
@@ -700,7 +710,6 @@ def exportar_csv():
         df = pd.read_sql_query("SELECT * FROM acessorios", conn)
         conn.close()
     
-    # Limpa os 'nan' do DataFrame exportado para CSV
     df = df.fillna("")
     file_path = os.path.join(EXPORTS_EXCEL_DIR, "relatorio.csv")
     df.to_csv(file_path, index=False, sep=';', encoding='utf-8-sig')
