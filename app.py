@@ -24,7 +24,7 @@ for folder in [DATA_DIR, UPLOAD_FOLDER, EXPORTS_PDF_DIR, EXPORTS_EXCEL_DIR, IMPO
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
-# Configuração do Banco de Dados: Usa PostgreSQL se estiver no Render, senão usa SQLite local
+# Configuração do Banco de Dados: PostgreSQL no Render ou SQLite local no PC
 DATABASE_URL = os.environ.get('DATABASE_URL')
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
@@ -166,18 +166,12 @@ def get_most_used_values():
     data = {}
     if DB_TYPE == "postgres":
         with engine.connect() as conn:
-            for col in ['cor', 'fornecedor', 'medida', 'sistema', 'linha', 'material']:
-                res = conn.execute(text(f"SELECT DISTINCT TRIM({col}) FROM acessorios WHERE {col} IS NOT NULL AND TRIM({col}) != '' ORDER BY 1 ASC"))
-                data[col + 's'] = [fix_text(row[0]) for row in res.fetchall() if row[0]]
             res_precos = conn.execute(text("SELECT * FROM precos_kg ORDER BY cor ASC"))
             data['precos_cores'] = [{'id': p[0], 'cor': fix_text(p[1]), 'preco_kg': p[2]} for p in res_precos.fetchall()]
     else:
         conn = sqlite3.connect(DB_NAME)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        for col in ['cor', 'fornecedor', 'medida', 'sistema', 'linha', 'material']:
-            cursor.execute(f"SELECT DISTINCT TRIM({col}) FROM acessorios WHERE {col} IS NOT NULL AND TRIM({col}) != '' ORDER BY {col} ASC")
-            data[col + 's'] = [fix_text(row[0]) for row in cursor.fetchall() if row[0]]
         cursor.execute("SELECT * FROM precos_kg ORDER BY cor ASC")
         precos_bruto = cursor.fetchall()
         data['precos_cores'] = [{'id': p['id'], 'cor': fix_text(p['cor']), 'preco_kg': p['preco_kg']} for p in precos_bruto]
@@ -189,25 +183,16 @@ def index():
     registros = []
     stats = (0, 0.0, 0)
     precos_cores = []
-    
-    coluna = request.args.get('coluna', 'codigo')
-    termo = request.args.get('termo', '').strip()
 
     if DB_TYPE == "postgres":
         with engine.connect() as conn:
-            if termo:
-                query = text(f"SELECT * FROM acessorios WHERE CAST({coluna} AS TEXT) ILIKE :termo ORDER BY codigo ASC")
-                res_reg = conn.execute(query, {"termo": f"%{termo}%"})
-            else:
-                res_reg = conn.execute(text("SELECT * FROM acessorios ORDER BY codigo ASC"))
-            
+            res_reg = conn.execute(text("SELECT * FROM acessorios ORDER BY codigo ASC"))
             cols = res_reg.keys()
             for r in res_reg.fetchall():
                 r_dict = dict(zip(cols, r))
                 for key in r_dict:
                     if isinstance(r_dict[key], str):
                         r_dict[key] = fix_text(r_dict[key])
-                # Limpa o nome da imagem para pegar apenas o arquivo puro
                 if r_dict.get('imagem'):
                     r_dict['imagem'] = os.path.basename(r_dict['imagem'])
                 registros.append(r_dict)
@@ -222,12 +207,7 @@ def index():
         conn = sqlite3.connect(DB_NAME)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        if termo:
-            query = f"SELECT * FROM acessorios WHERE {coluna} LIKE ? ORDER BY codigo ASC"
-            cursor.execute(query, (f"%{termo}%",))
-        else:
-            cursor.execute("SELECT * FROM acessorios ORDER BY codigo ASC")
-            
+        cursor.execute("SELECT * FROM acessorios ORDER BY codigo ASC")
         registros_bruto = cursor.fetchall()
         for reg in registros_bruto:
             r_dict = dict(reg)
@@ -268,9 +248,7 @@ def index():
                            dropdowns=get_most_used_values(), 
                            precos_cores=precos_cores, 
                            movimentacoes=[], 
-                           abrir_modal_relatorio=False,
-                           coluna=coluna,
-                           termo=termo)
+                           abrir_modal_relatorio=False)
 
 @app.route('/uploads/<path:filename>')
 def servir_uploads(filename):
@@ -322,7 +300,6 @@ def salvar():
     peso_kg_m = clean_num(request.form.get('peso_kg_m'))
     valor = clean_num(request.form.get('valor'))
     
-    # Tratamento de upload de imagem individual pelo modal
     file = request.files.get('imagem_file')
     img = ""
     if file and file.filename:
@@ -499,9 +476,7 @@ def relatorio_movimentacoes():
                            dropdowns=get_most_used_values(), 
                            precos_cores=precos_cores, 
                            movimentacoes=movs, 
-                           abrir_modal_relatorio=True,
-                           coluna='codigo',
-                           termo='')
+                           abrir_modal_relatorio=True)
 
 @app.route('/baixar_historico_arquivo')
 def baixar_historico_arquivo():
@@ -712,6 +687,9 @@ def exportar_csv():
 
 @app.route('/exportar_pdf', methods=['POST'])
 def exportar_pdf():
+    ids_json = request.form.get('ids_filtrados')
+    ids_filtrados = json.loads(ids_json) if ids_json else []
+
     colunas_selecionadas = request.form.getlist('colunas')
     if not colunas_selecionadas:
         colunas_selecionadas = ['codigo', 'descricao', 'cor', 'fornecedor', 'medida', 'sistema', 'linha', 'observacao', 'valor', 'material', 'peso_kg_m']
@@ -721,12 +699,23 @@ def exportar_pdf():
     usable_width = 552 if orientacao == 'retrato' else 732
 
     if DB_TYPE == "postgres":
-        df = pd.read_sql("SELECT imagem, codigo, descricao, fornecedor, linha, cor, medida, sistema, valor, observacao, material, peso_kg_m FROM acessorios", engine)
-        rows = df.values.tolist()
+        with engine.connect() as conn:
+            if ids_filtrados:
+                placeholders = ','.join([f":id_{i}" for i in range(len(ids_filtrados))])
+                params = {f"id_{i}": int(id_val) for i, id_val in enumerate(ids_filtrados)}
+                query = text(f"SELECT imagem, codigo, descricao, fornecedor, linha, cor, medida, sistema, valor, observacao, material, peso_kg_m FROM acessorios WHERE id IN ({placeholders})")
+                rows = conn.execute(query, params).fetchall()
+            else:
+                rows = conn.execute(text("SELECT imagem, codigo, descricao, fornecedor, linha, cor, medida, sistema, valor, observacao, material, peso_kg_m FROM acessorios")).fetchall()
     else:
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
-        cursor.execute("SELECT imagem, codigo, descricao, fornecedor, linha, cor, medida, sistema, valor, observacao, material, peso_kg_m FROM acessorios")
+        if ids_filtrados:
+            placeholders = ','.join(['?'] * len(ids_filtrados))
+            query = f"SELECT imagem, codigo, descricao, fornecedor, linha, cor, medida, sistema, valor, observacao, material, peso_kg_m FROM acessorios WHERE id IN ({placeholders})"
+            cursor.execute(query, [int(x) for x in ids_filtrados])
+        else:
+            cursor.execute("SELECT imagem, codigo, descricao, fornecedor, linha, cor, medida, sistema, valor, observacao, material, peso_kg_m FROM acessorios")
         rows = cursor.fetchall()
         conn.close()
 
