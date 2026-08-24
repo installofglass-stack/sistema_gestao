@@ -333,6 +333,7 @@ def salvar():
                 p_row = res.fetchone()
                 if p_row and p_row[0]:
                     valor = round(float(p_row[0]) * peso_kg_m * 6.0, 2)
+                    valor = float(f"{valor:.2f}") # Força o arredondamento limpo de 2 casas
         else:
             conn_temp = sqlite3.connect(DB_NAME)
             cur_temp = conn_temp.cursor()
