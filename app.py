@@ -14,11 +14,12 @@ app = Flask(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
+STATIC_UPLOAD_FOLDER = os.path.join(BASE_DIR, 'static', 'uploads')
 EXPORTS_PDF_DIR = os.path.join(BASE_DIR, 'exports', 'pdf')
 EXPORTS_EXCEL_DIR = os.path.join(BASE_DIR, 'exports', 'excel')
 IMPORT_DIR = os.path.join(BASE_DIR, 'imports')
 
-for folder in [UPLOAD_FOLDER, EXPORTS_PDF_DIR, EXPORTS_EXCEL_DIR, IMPORT_DIR]:
+for folder in [UPLOAD_FOLDER, STATIC_UPLOAD_FOLDER, EXPORTS_PDF_DIR, EXPORTS_EXCEL_DIR, IMPORT_DIR]:
     os.makedirs(folder, exist_ok=True)
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
@@ -164,11 +165,15 @@ def salvar_historico_arquivo():
 
 def encontrar_imagem_na_pasta(codigo):
     if not codigo: return ""
-    codigo_str = str(codigo).strip()
-    if os.path.exists(UPLOAD_FOLDER):
-        for arq in os.listdir(UPLOAD_FOLDER):
-            if os.path.splitext(arq)[0].lower() == codigo_str.lower():
-                return arq
+    codigo_str = str(codigo).strip().lower()
+    
+    # Verifica em ambas as pastas de upload possíveis
+    pastas_para_checar = [UPLOAD_FOLDER, STATIC_UPLOAD_FOLDER]
+    for pasta in pastas_para_checar:
+        if os.path.exists(pasta):
+            for arq in os.listdir(pasta):
+                if os.path.splitext(arq)[0].lower() == codigo_str:
+                    return arq
     return ""
 
 def get_most_used_values():
@@ -206,10 +211,11 @@ def index():
                     elif isinstance(val, str):
                         r_dict[key] = fix_text(val)
                 
-                if not r_dict.get('imagem') or str(r_dict.get('imagem')).lower() == 'nan':
-                    r_dict['imagem'] = ""
+                img_atual = r_dict.get('imagem', '')
+                if not img_atual or str(img_atual).lower() == 'nan':
+                    r_dict['imagem'] = encontrar_imagem_na_pasta(r_dict.get('codigo'))
                 else:
-                    r_dict['imagem'] = os.path.basename(r_dict['imagem'])
+                    r_dict['imagem'] = os.path.basename(img_atual)
                 registros.append(r_dict)
             
             res_stats = conn.execute(text("SELECT COUNT(*), SUM(valor * COALESCE(estoque, 0)), COUNT(DISTINCT fornecedor) FROM acessorios"))
@@ -233,10 +239,11 @@ def index():
                 elif isinstance(val, str):
                     r_dict[key] = fix_text(val)
             
-            if not r_dict.get('imagem') or str(r_dict.get('imagem')).lower() == 'nan':
-                r_dict['imagem'] = ""
+            img_atual = r_dict.get('imagem', '')
+            if not img_atual or str(img_atual).lower() == 'nan':
+                r_dict['imagem'] = encontrar_imagem_na_pasta(r_dict.get('codigo'))
             else:
-                r_dict['imagem'] = os.path.basename(r_dict['imagem'])
+                r_dict['imagem'] = os.path.basename(img_atual)
             registros.append(r_dict)
             
         cursor.execute("SELECT COUNT(*), SUM(valor * COALESCE(estoque, 0)), COUNT(DISTINCT fornecedor) FROM acessorios")
@@ -257,7 +264,11 @@ def index():
 
 @app.route('/uploads/<path:filename>')
 def servir_uploads(filename):
-    return send_from_directory(UPLOAD_FOLDER, filename)
+    if os.path.exists(os.path.join(UPLOAD_FOLDER, filename)):
+        return send_from_directory(UPLOAD_FOLDER, filename)
+    elif os.path.exists(os.path.join(STATIC_UPLOAD_FOLDER, filename)):
+        return send_from_directory(STATIC_UPLOAD_FOLDER, filename)
+    return "", 404
 
 @app.route('/salvar_preco_kg', methods=['POST'])
 def salvar_preco_kg():
@@ -451,7 +462,14 @@ def relatorio_movimentacoes():
 
             res_reg = conn.execute(text("SELECT * FROM acessorios ORDER BY codigo ASC"))
             cols_reg = res_reg.keys()
-            registros = [dict(zip(cols_reg, r)) for r in res_reg.fetchall()]
+            for r in res_reg.fetchall():
+                r_dict = dict(zip(cols_reg, r))
+                img_atual = r_dict.get('imagem', '')
+                if not img_atual or str(img_atual).lower() == 'nan':
+                    r_dict['imagem'] = encontrar_imagem_na_pasta(r_dict.get('codigo'))
+                else:
+                    r_dict['imagem'] = os.path.basename(img_atual)
+                registros.append(r_dict)
 
             res_stats = conn.execute(text("SELECT COUNT(*), SUM(valor * COALESCE(estoque, 0)), COUNT(DISTINCT fornecedor) FROM acessorios"))
             stats_row = res_stats.fetchone()
@@ -466,7 +484,15 @@ def relatorio_movimentacoes():
         cursor.execute("SELECT * FROM movimentacoes ORDER BY id DESC")
         movs = cursor.fetchall()
         cursor.execute("SELECT * FROM acessorios ORDER BY codigo ASC")
-        registros = cursor.fetchall()
+        for reg in cursor.fetchall():
+            r_dict = dict(reg)
+            img_atual = r_dict.get('imagem', '')
+            if not img_atual or str(img_atual).lower() == 'nan':
+                r_dict['imagem'] = encontrar_imagem_na_pasta(r_dict.get('codigo'))
+            else:
+                r_dict['imagem'] = os.path.basename(img_atual)
+            registros.append(r_dict)
+            
         cursor.execute("SELECT COUNT(*), SUM(valor * COALESCE(estoque, 0)), COUNT(DISTINCT fornecedor) FROM acessorios")
         stats = cursor.fetchone()
         cursor.execute("SELECT * FROM precos_kg ORDER BY cor ASC")
@@ -519,6 +545,9 @@ def exportar_carrinho_pdf():
         img_nome = encontrar_imagem_na_pasta(codigo)
         if img_nome:
             img_path = os.path.join(UPLOAD_FOLDER, img_nome)
+            if not os.path.exists(img_path):
+                img_path = os.path.join(STATIC_UPLOAD_FOLDER, img_nome)
+            
             if os.path.exists(img_path):
                 try:
                     img_element = Image(img_path, width=35, height=25)
@@ -757,10 +786,14 @@ def exportar_pdf():
         for c in valid_cols:
             idx = col_map[c][0]
             if idx == 0:
-                img_nome = os.path.basename(str(row[0])) if row[0] and str(row[0]).lower() != 'nan' else ""
+                codigo_item = str(row[1]) if len(row) > 1 else ""
+                img_nome = encontrar_imagem_na_pasta(codigo_item)
                 img_element = Paragraph("Sem Foto", style_cell)
                 if img_nome:
                     img_path = os.path.join(UPLOAD_FOLDER, img_nome)
+                    if not os.path.exists(img_path):
+                        img_path = os.path.join(STATIC_UPLOAD_FOLDER, img_nome)
+                        
                     if os.path.exists(img_path):
                         try:
                             img_element = Image(img_path, width=35, height=25)
