@@ -320,7 +320,6 @@ def excluir_preco_kg(id):
 @app.route('/salvar', methods=['POST'])
 def salvar():
     id_reg = request.form.get('id')
-    # Força tudo a ficar em MAIÚSCULO ao cadastrar/salvar
     codigo = fix_text(request.form.get('codigo')).strip().upper()
     descricao = fix_text(request.form.get('descricao')).upper()
     fornecedor = fix_text(request.form.get('fornecedor')).upper()
@@ -669,14 +668,23 @@ def importar_excel():
     file_path = os.path.join(IMPORT_DIR, file.filename)
     file.save(file_path)
     
+    df = None
     try:
         if file.filename.endswith('.csv'):
             try:
                 df = pd.read_csv(file_path, sep=';', encoding='utf-8-sig', on_bad_lines='skip')
+                if len(df.columns) <= 1:
+                    raise Exception("Separador incorreto")
             except:
-                df = pd.read_csv(file_path, sep=',', encoding='utf-8-sig', on_bad_lines='skip')
+                try:
+                    df = pd.read_csv(file_path, sep=',', encoding='utf-8-sig', on_bad_lines='skip')
+                except:
+                    df = pd.read_csv(file_path, sep=None, engine='python', encoding='utf-8-sig', on_bad_lines='skip')
         else:
             df = pd.read_excel(file_path)
+        
+        if df is None or df.empty:
+            return redirect(url_for('index'))
         
         df.columns = [str(c).lower().strip() for c in df.columns]
         
@@ -689,7 +697,6 @@ def importar_excel():
             if not codigo or codigo.lower() == 'nan' or len(codigo) > 50: 
                 continue
             
-            # Força tudo em MAIÚSCULO ao importar planilhas
             descricao = fix_text(row.get('descricao', '')).upper()
             fornecedor = fix_text(row.get('fornecedor', '')).upper()
             linha = fix_text(row.get('linha', '')).upper()
@@ -757,7 +764,7 @@ def importar_excel():
                     cursor_sub.execute('''
                         INSERT INTO acessorios (imagem, codigo, descricao, fornecedor, linha, cor, medida, sistema, valor, observacao, estoque, nescessario, material, peso_kg_m) 
                         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                    ''', (img_final, codigo, descricao, fornecedor, linha, cor, medida, sistema, valor, observacao, estoque, nescessario, material, peso_kg_m))
+                    ''', (img_final, descricao, fornecedor, linha, cor, medida, sistema, valor, observacao, estoque, nescessario, material, peso_kg_m))
                 conn_sub.commit()
                 conn_sub.close()
                 
